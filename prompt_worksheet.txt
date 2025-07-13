@@ -1,0 +1,6 @@
+Create 10 fraction math problems formated like this 
+1.
+2. 
+3. 
+4. 
+etc.
