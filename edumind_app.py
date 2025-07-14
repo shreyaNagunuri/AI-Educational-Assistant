@@ -1,30 +1,22 @@
 import streamlit as st
-import fitz  # PyMuPDF
+import fitz 
 import requests
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM
-from huggingface_hub import configure_http_backend
+from langchain_community.document_loaders import PyMuPDFLoader
+from langchain_community.llms import Ollama
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain.chains import RetrievalQA
+import tempfile
+import os
 
-# Fix the arrow symbol in the function definition
-def backend_factory() -> requests.Session:
-    session = requests.Session()
-    session.verify = False 
-    return session
+def generate_with_ollama(prompt, model="phi3"):
+    response = requests.post(
+        "http://localhost:11434/api/generate",
+        json={"model": model, "prompt": prompt, "stream": False}
+    )
+    return response.json()["response"]
 
-configure_http_backend(backend_factory=backend_factory)
-
-deepseek_tokenizer = AutoTokenizer.from_pretrained("google-t5/t5-large")
-deepseek_model = AutoModelForSeq2SeqLM.from_pretrained("google-t5/t5-large")
-
-
-# ✅ Create a unified pipeline for instruction-based generation
-deepseek_pipeline = pipeline(
-    "text2text-generation",
-    model=deepseek_model,
-    tokenizer=deepseek_tokenizer,
-    device=-1
-)
-
-# Utility function to load prompt templates
 def load_prompt(filename):
     try:
         with open(filename, "r", encoding="utf-8") as f:
@@ -32,7 +24,6 @@ def load_prompt(filename):
     except FileNotFoundError:
         return f"Error: {filename} not found."
 
-# Load prompt templates
 lessonplan_template = load_prompt("prompt_lessonplan.txt")
 worksheet_template = load_prompt("prompt_worksheet.txt")
 
@@ -43,19 +34,20 @@ Welcome to your helpful assistant that can make your life easier! 🎓
 This platform helps teachers generate engaging teaching materials using AI.
 
 You can:
-- ✍️ **Enter a topic** to generate summaries and quiz questions.
-- 📂 **Upload a PDF** (e.g., lesson plans, notes) to extract content and generate teaching aids.
+- **Enter a topic** to generate summaries and quiz questions.
+- **Upload a PDF** (e.g., lesson plans, notes) to extract content and generate teaching aids.
+- **Ask questions** from a passage using a fast local model.
 
 Use the sidebar to navigate between:
-- **Generate Teaching Material**: Create summaries and quizzes from text or PDFs.
-- **Evaluate Student Answers**: Analyze student responses and generate follow-up questions.
+- **Generate Teaching Material**
+- **Ask a Question**
 """)
 
 st.sidebar.header("Navigation")
-page = st.sidebar.radio("Go to", ["Generate Teaching Material", "Evaluate Student Answers"])
+page = st.sidebar.radio("Go to", ["Generate Teaching Material", "Ask a Question"])
 
 if page == "Generate Teaching Material":
-    st.header("🧠 Generate Teaching Material")
+    st.header("Generate Teaching Material")
 
     st.subheader("Option A: Start from Scratch")
     topic = st.text_input("Enter a topic (e.g., 'Adding Fractions'):")
@@ -71,7 +63,7 @@ if page == "Generate Teaching Material":
                 prompt = worksheet_template.replace("<INSERT_TOPIC_HERE>", topic).replace("<INSERT_GRADE_LEVEL_HERE>", grade_level)
 
             with st.spinner("Generating content..."):
-                response = deepseek_pipeline(prompt)[0]['generated_text']
+                response = generate_with_ollama(prompt)
                 st.subheader("📄 Generated Content")
                 st.write(response)
         else:
@@ -81,54 +73,101 @@ if page == "Generate Teaching Material":
     st.subheader("Option B: Upload Existing Material")
 
     uploaded_pdf = st.file_uploader("Upload a PDF file", type=["pdf"])
-    extracted_text = ""
-
     if uploaded_pdf is not None:
-        with fitz.open(stream=uploaded_pdf.read(), filetype="pdf") as doc:
-            for page in doc:
-                extracted_text += page.get_text()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(uploaded_pdf.read())
+            tmp_path = tmp_file.name
 
-        st.subheader("📄 Extracted Text")
-        pdf_text = st.text_area("Review or edit the extracted content:", value=extracted_text, height=300)
+        # Load and split PDF
+        loader = PyMuPDFLoader(tmp_path)
+        pages = loader.load()
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        chunks = text_splitter.split_documents(pages)
+        full_text = "\n\n".join([chunk.page_content for chunk in chunks])
+
+        st.subheader("Extracted Text")
+        st.text_area("Review or edit the extracted content:", value=full_text, height=300)
 
         lesson_type_pdf = st.radio("Select output type for PDF:", ["Lesson Plan", "Worksheet"], key="pdf_radio")
 
         if st.button("Generate Content from PDF"):
-            if pdf_text.strip():
+            if full_text.strip():
                 with st.spinner("Generating content..."):
-                    if lesson_type_pdf == "Lesson Plan":
-                        prompt = f"Instruction: Summarize the following content and generate quiz questions suitable for students.\n\nContent:\n{pdf_text}"
-                    else:
-                        prompt = f"Instruction: Generate 10 practice problems suitable for students based on the following material:\n\n{pdf_text}"
+                    llm = Ollama(model="phi3")
 
-                    response = deepseek_pipeline(prompt)[0]['generated_text']
+                    if lesson_type_pdf == "Lesson Plan":
+                        prompt = f"Create a detailed lesson plan based on the following material:\n\n{full_text}"
+                    else:
+                        prompt = f"Generate 10 practice problems for students based on the following material:\n\n{full_text}"
+
+                    response = llm.invoke(prompt)
                     st.subheader("📄 Generated Output")
                     st.write(response)
             else:
                 st.warning("Please enter or upload some content.")
 
-elif page == "Evaluate Student Answers":
-    st.header("📊 Evaluate Student Answers")
-    uploaded_file = st.file_uploader("Upload a text file with student answers", type=["txt"])
+        os.remove(tmp_path)
+elif page == "Ask a Question":
+    st.header("Ask a Question from a PDF")
 
-    if uploaded_file is not None:
-        student_text = uploaded_file.read().decode("utf-8")
-        st.text_area("Student Answers", student_text, height=200)
+    # Initialize session state for Q&A history
+    if "qa_history" not in st.session_state:
+        st.session_state.qa_history = []
 
-        if st.button("Analyze and Generate Follow-up Questions"):
-            with st.spinner("Analyzing answers..."):
-                sentences = student_text.split(".")
-                incorrect = [s.strip() for s in sentences if len(s.strip()) > 10 and "not" in s.lower()]
+    uploaded_pdf = st.file_uploader("Upload a PDF to ask questions from", type=["pdf"], key="qa_pdf")
 
-                if incorrect:
-                    st.subheader("❌ Detected Issues")
-                    for i, s in enumerate(incorrect, 1):
-                        st.write(f"{i}. {s}")
+    if uploaded_pdf is not None:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(uploaded_pdf.read())
+            tmp_path = tmp_file.name
 
-                    st.subheader("🔁 Follow-up Questions")
-                    for i, s in enumerate(incorrect, 1):
-                        prompt = f"Instruction: Based on the following incorrect student answer, generate a follow-up question to guide them:\n\n{s}"
-                        followup = deepseek_pipeline(prompt)[0]['generated_text']
-                        st.write(f"{i}. {followup}")
-                else:
-                    st.success("No major issues detected in the student answers.")
+        # Load and split the PDF
+        loader = PyMuPDFLoader(tmp_path)
+        pages = loader.load()
+
+        # Embed and store in vector DB
+        embeddings = OllamaEmbeddings(model="nomic-embed-text")
+        vectorstore = Chroma.from_documents(pages, embedding=embeddings)
+
+        retriever = vectorstore.as_retriever()
+        llm = Ollama(model="phi3")
+
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            retriever=retriever,
+            return_source_documents=True
+        )
+
+        question = st.text_input("Ask a question based on the uploaded PDF:")
+
+        if question:
+            with st.spinner("Thinking..."):
+                result = qa_chain({"query": question})
+                answer = result["result"]
+
+                st.subheader("📘 Answer")
+                st.write(answer)
+
+                # Save Q&A to session state
+                st.session_state.qa_history.append((question, answer))
+
+                with st.expander("🔍 Source Chunks"):
+                    for doc in result["source_documents"]:
+                        st.markdown(doc.page_content)
+
+        # Display Q&A history and download option
+        if st.session_state.qa_history:
+            st.subheader("📚 Q&A History")
+            for i, (q, a) in enumerate(st.session_state.qa_history, 1):
+                st.markdown(f"**Q{i}:** {q}")
+                st.markdown(f"**A{i}:** {a}")
+
+            qa_text = "\n\n".join([f"Q{i+1}: {q}\nA{i+1}: {a}" for i, (q, a) in enumerate(st.session_state.qa_history)])
+            st.download_button(
+                label="📥 Download Q&A as .txt",
+                data=qa_text,
+                file_name="qa_session.txt",
+                mime="text/plain"
+            )
+
+        os.remove(tmp_path)
