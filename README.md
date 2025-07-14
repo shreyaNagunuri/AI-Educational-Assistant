@@ -40,5 +40,6 @@ This app helps teachers generate lesson plans, worksheets, and answer questions 
  
 ## People
 Shreya Nagunuri  
+snagunur@qti.qualcomm.com  
 Anya Chernova  
-
+achernov@qti.qualcomm.com  
