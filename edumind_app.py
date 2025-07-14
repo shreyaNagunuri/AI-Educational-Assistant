@@ -64,7 +64,7 @@ if page == "Generate Teaching Material":
 
             with st.spinner("Generating content..."):
                 response = generate_with_ollama(prompt)
-                st.subheader("📄 Generated Content")
+                st.subheader("Generated Content")
                 st.write(response)
         else:
             st.warning("Please enter both a topic and a grade level.")
@@ -101,7 +101,7 @@ if page == "Generate Teaching Material":
                         prompt = f"Generate 10 practice problems for students based on the following material:\n\n{full_text}"
 
                     response = llm.invoke(prompt)
-                    st.subheader("📄 Generated Output")
+                    st.subheader("Generated Output")
                     st.write(response)
             else:
                 st.warning("Please enter or upload some content.")
@@ -145,26 +145,26 @@ elif page == "Ask a Question":
                 result = qa_chain({"query": question})
                 answer = result["result"]
 
-                st.subheader("📘 Answer")
+                st.subheader("Answer")
                 st.write(answer)
 
                 # Save Q&A to session state
                 st.session_state.qa_history.append((question, answer))
 
-                with st.expander("🔍 Source Chunks"):
+                with st.expander("Source Chunks"):
                     for doc in result["source_documents"]:
                         st.markdown(doc.page_content)
 
         # Display Q&A history and download option
         if st.session_state.qa_history:
-            st.subheader("📚 Q&A History")
+            st.subheader("Q&A History")
             for i, (q, a) in enumerate(st.session_state.qa_history, 1):
                 st.markdown(f"**Q{i}:** {q}")
                 st.markdown(f"**A{i}:** {a}")
 
             qa_text = "\n\n".join([f"Q{i+1}: {q}\nA{i+1}: {a}" for i, (q, a) in enumerate(st.session_state.qa_history)])
             st.download_button(
-                label="📥 Download Q&A as .txt",
+                label="Download Q&A as .txt",
                 data=qa_text,
                 file_name="qa_session.txt",
                 mime="text/plain"
